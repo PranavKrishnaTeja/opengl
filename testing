@@ -1,0 +1,493 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <iostream>
+#include <GL/glew.h>
+#include <OPENGL/gl.h>
+#include <GLUT/GLUT.h>
+#include <GL/GLUT.h>
+#include <glm/glm.hpp>
+#include <tuple>
+#include <string>
+#include <vector>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+struct Vertex {
+    GLfloat x, y, z;
+    GLfloat nx, ny, nz; // vertex normal
+    GLfloat u, v; // texture coordinates
+};
+struct Face {
+    GLuint v1, v2, v3;
+};
+std::vector<Face> faces;
+std::vector<Vertex> vertices;
+std::vector<Vertex> normals;
+bool light0_enabled = true;
+bool light1_enabled = true;
+bool light2_enabled = true;
+GLenum shading_model = GL_SMOOTH;
+
+// mouse button for rotating states
+int MouseLeftButton = 0;
+
+// rotation values for the navigation
+float navigationRotation[3] = { 0.0, 0.0, 0.0 };
+
+// navigation parameters and position of the mouse when pressed
+int mouseClickXcordinate = 0, mouseClickYcordinate = 0;
+float lastXOffset = 0.0, lastYOffset = 0.0, lastZOffset = 0.0;
+
+// lights
+GLfloat light0_direction[] = { 0.0f, 6.0f, -1.0f, 0.0f };
+GLfloat light1_position[] = { 0.0f, 5.0f, 0.0f, 1.0f };
+GLfloat light2_position[] = { 0.0f, 10.0f, -2.0f, 1.0f };
+
+GLfloat global_ambient[] = { 0.2f, 0.2f, 0.2f, 1.0f };
+
+struct Material {
+    GLfloat color[3];
+    GLfloat ambient[4];
+    GLfloat diffuse[4];
+    GLfloat specular[4];
+    GLfloat shininess;
+};
+
+Material cow1Material = {
+    {0.8f, 0.1f, 0.2f},
+    {0.1f, 0.2f, 0.3f, 1.0f},
+    {0.5f, 0.5f, 0.5f, 1.0f},
+    {0.5f, 0.5f, 0.5f, 1.0f},
+    0.0f
+};
+
+Material cow2Material = {
+    {0.3f, 0.9f, 0.1f},
+    {0.3f, 0.1f, 0.2f, 1.0f},
+    {0.6f, 0.6f, 0.6f, 1.0f},
+    {0.6f, 0.6f, 0.6f, 1.0f},
+    16.0f
+};
+
+Material cow3Material = {
+    {0.1f, 0.23f, 0.96f},
+    {0.2f, 0.3f, 0.1f, 1.0f},
+    {0.7f, 0.7f, 0.7f, 1.0f},
+    {0.7f, 0.7f, 0.7f, 1.0f},
+    64.0f
+};
+
+Material cow4Material = {
+    {0.4f, 0.3f, 0.4f},
+    {0.1f, 0.3f, 0.2f, 1.0f},
+    {0.8f, 0.8f, 0.8f, 1.0f},
+    {0.8f, 0.8f, 0.8f, 1.0f},
+    75.0f
+};
+
+Material cowMaterials[] = {cow1Material, cow2Material, cow3Material, cow4Material };
+GLuint textureID;
+
+void drawCow(Material material, bool useTexture);
+void readObjFile(char* path);
+void initializeCow();
+void loadTexture(const char* filename);
+
+void readObjFile(const char* path) {
+    FILE* fp = fopen(path, "r");
+    if (!fp)
+    {
+        printf("can't open file %s\n", path);
+        return;
+    }
+
+    char line[25600];
+    while (fgets(line, sizeof(line), fp))
+    {
+        if (line[0] == 'v') {
+            Vertex x;
+            sscanf(line, "v %f %f %f", &x.x, &x.y, &x.z);
+            x.nx = x.ny = x.nz = 0.0f;
+            vertices.push_back(x);
+        }
+        else if (line[0] == 'f') {
+            Face f;
+            sscanf(line, "f %d %d %d", &f.v1, &f.v2, &f.v3);
+            faces.push_back(f);
+        }
+    }
+    fclose(fp);
+}
+
+void loadTexture(const char* filename) {
+    int width, height, channels;
+    unsigned char* data = stbi_load(filename, &width, &height, &channels, 0);
+    if (data) {
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        GLenum format = GL_RGB;
+        if (channels == 4) {
+            format = GL_RGBA;
+        }
+
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        stbi_image_free(data);
+    }
+    else {
+        std::cerr << "Failed to load texture: " << filename << std::endl;
+        stbi_image_free(data);
+    }
+}
+
+void initializeCow() {
+
+    for (const auto& face : faces) {
+        // Get the three vertices of the face
+        Vertex& v1 = vertices[face.v1 - 1];
+        Vertex& v2 = vertices[face.v2 - 1];
+        Vertex& v3 = vertices[face.v3 - 1];
+
+        // Compute the face normal
+        float nx = (v2.y - v1.y) * (v3.z - v1.z) - (v2.z - v1.z) * (v3.y - v1.y);
+        float ny = (v2.z - v1.z) * (v3.x - v1.x) - (v2.x - v1.x) * (v3.z - v1.z);
+        float nz = (v2.x - v1.x) * (v3.y - v1.y) - (v2.y - v1.y) * (v3.x - v1.x);
+        float len = sqrt(nx * nx + ny * ny + nz * nz);
+        if (len != 0) {
+            nx /= len;
+            ny /= len;
+            nz /= len;
+        }
+
+        // Accumulate face normal into vertex normals
+        v1.nx += nx; v1.ny += ny; v1.nz += nz;
+        v2.nx += nx; v2.ny += ny; v2.nz += nz;
+        v3.nx += nx; v3.ny += ny; v3.nz += nz;
+    }
+
+    float textureRepeatFactor = 0.3f;
+
+    for (auto& vertex : vertices) {
+        float len = sqrt(vertex.nx * vertex.nx + vertex.ny * vertex.ny + vertex.nz * vertex.nz);
+        if (len != 0) {
+            vertex.nx /= len;
+            vertex.ny /= len;
+            vertex.nz /= len;
+        }
+
+        vertex.u = vertex.x * textureRepeatFactor;
+        vertex.v = vertex.y * textureRepeatFactor;
+    }
+}
+
+void drawCow(Material material, bool useTexture = false) {
+    glColor3fv(material.color);
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material.ambient);
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material.diffuse);
+    glMaterialfv(GL_FRONT, GL_SPECULAR, material.specular);
+    glMaterialf(GL_FRONT, GL_SHININESS, material.shininess);
+
+    if (useTexture) {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    }
+
+    glBegin(GL_TRIANGLES);
+    for (const auto& face : faces) {
+        // Get the three vertices of the face
+        Vertex v1 = vertices[face.v1 - 1];
+        Vertex v2 = vertices[face.v2 - 1];
+        Vertex v3 = vertices[face.v3 - 1];
+
+        // Draw the face
+        glNormal3f(v1.nx, v1.ny, v1.nz);
+        if (useTexture) glTexCoord2f(v1.u, v1.v);
+        glVertex3f(v1.x, v1.y, v1.z);
+        glNormal3f(v2.nx, v2.ny, v2.nz);
+        if (useTexture) glTexCoord2f(v2.u, v2.v);
+        glVertex3f(v2.x, v2.y, v2.z);
+        glNormal3f(v3.nx, v3.ny, v3.nz);
+        if (useTexture) glTexCoord2f(v3.u, v3.v);
+        glVertex3f(v3.x, v3.y, v3.z);
+    }
+    glEnd();
+    if (useTexture) {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
+    }
+}
+
+void changeGlobalAmbient(int index, float delta) {
+    global_ambient[index] += delta;
+    if (global_ambient[index] < 0.0f) global_ambient[index] = 0.0f;
+    if (global_ambient[index] > 1.0f) global_ambient[index] = 1.0f;
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, global_ambient);
+}
+
+void changeSpecular(int cowIndex, int index, float delta) {
+    cowMaterials[cowIndex].specular[index] += delta;
+    if (cowMaterials[cowIndex].specular[index] < 0.0f) cowMaterials[cowIndex].specular[index] = 0.0f;
+    if (cowMaterials[cowIndex].specular[index] > 1.0f) cowMaterials[cowIndex].specular[index] = 1.0f;
+}
+
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(0, 5, 12, 0, 0, 0, 0, 1, 0);
+    //gluLookAt(0, 10, 20, 0, 0, 0, 0, 1, 0);
+
+    glShadeModel(shading_model);
+    
+    glRotatef(navigationRotation[0], 1.0f, 0.0f, 0.0f);
+    glRotatef(navigationRotation[1], 0.0f, 1.0f, 0.0f);
+
+    // Ground
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(-5.0f, 0.0f, -5.0f);
+    glVertex3f(5.0f, 0.0f, -5.0f);
+    glVertex3f(5.0f, 0.0f, 5.0f);
+    glVertex3f(-5.0f, 0.0f, 5.0f);
+    glEnd();
+
+    // Walls
+    glColor3f(1.0f, 0.8f, 1.0f);
+    glBegin(GL_QUADS);
+    // Wall 1
+    glVertex3f(-5.0f, 0.0f, -5.0f);
+    glVertex3f(5.0f, 0.0f, -5.0f);
+    glVertex3f(5.0f, 5.0f, -5.0f);
+    glVertex3f(-5.0f, 5.0f, -5.0f);
+    glEnd();
+    // Wall 2
+    glColor3f(0.0f, 1.0f, 1.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(5.0f, 0.0f, -5.0f);
+    glVertex3f(5.0f, 0.0f, 5.0f);
+    glVertex3f(5.0f, 5.0f, 5.0f);
+    glVertex3f(5.0f, 5.0f, -5.0f);
+    glEnd();
+    // Wall 3
+    glColor3f(1.0f, 1.0f, 0.6f);
+    glBegin(GL_QUADS);
+    glVertex3f(-5.0f, 0.0f, -5.0f);
+    glVertex3f(-5.0f, 0.0f, 5.0f);
+    glVertex3f(-5.0f, 5.0f, 5.0f);
+    glVertex3f(-5.0f, 5.0f, -5.0f);
+    glEnd();
+
+    // Cows
+    int cowIndex = 0;
+    for (int x = -2; x <= 2; x += 3) {
+        for (int z = -2; z <= 2; z += 3) {
+            glPushMatrix();
+            glTranslatef(x + 0.5f, 1.5f, z + 3.5f);
+            glScalef(0.2f, 0.2f, 0.2f);
+            drawCow(cowMaterials[cowIndex], cowIndex == 1);
+            cowIndex++;
+            glPopMatrix();
+        }
+    }
+
+    // Draw light0 as a sphere
+    if (light0_enabled) {
+        glPushMatrix();
+        glTranslatef(light0_direction[0], light0_direction[1], light0_direction[2]);
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glutSolidSphere(0.2, 16, 16);
+        glPopMatrix();
+    }
+
+    // Draw light1 as a sphere
+    if (light1_enabled) {
+        glPushMatrix();
+        glTranslatef(light1_position[0], light1_position[1], light1_position[2]);
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glutSolidCube(0.2);
+        glPopMatrix();
+    }
+
+    // Draw light2 as a sphere
+    if (light2_enabled) {
+        glPushMatrix();
+        glTranslatef(light2_position[0], light2_position[1], light2_position[2]);
+        glRotatef(-90.0f, 1.0f, 0.0f, 0.0f); // rotate the cone to point downwards
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glutSolidCone(0.2, 0.5, 16, 16); // parameters: base radius, height, slices, stacks
+        glPopMatrix();
+    }
+
+    glutSwapBuffers();
+}
+
+void idleFunc(void) {
+    glutPostRedisplay();
+}
+
+void keyboard(unsigned char key, int x, int y) {
+    switch (key) {
+    case '1':
+        light0_enabled = !light0_enabled;
+        if (light0_enabled) glEnable(GL_LIGHT0);
+        else glDisable(GL_LIGHT0);
+        break;
+    case '2':
+        light1_enabled = !light1_enabled;
+        if (light1_enabled) glEnable(GL_LIGHT1);
+        else glDisable(GL_LIGHT1);
+        break;
+    case '3':
+        light2_enabled = !light2_enabled;
+        if (light2_enabled) glEnable(GL_LIGHT2);
+        else glDisable(GL_LIGHT2);
+        break;
+    case 's':
+    case 'S':
+        shading_model = (shading_model == GL_SMOOTH) ? GL_FLAT : GL_SMOOTH;
+        break;
+    case 'r': // increase global ambient red
+        changeGlobalAmbient(0, 0.1f);
+        break;
+    case 'R': // decrease global ambient red
+        changeGlobalAmbient(0, -0.1f);
+        break;
+    case 'g': // increase global ambient green
+        changeGlobalAmbient(1, 0.1f);
+        break;
+    case 'G': // decrease global ambient green
+        changeGlobalAmbient(1, -0.1f);
+        break;
+    case 'b': // increase global ambient blue
+        changeGlobalAmbient(2, 0.1f);
+        break;
+    case 'B': // decrease global ambient blue
+        changeGlobalAmbient(2, -0.1f);
+        break;
+    case 't': // increase cow 1 specular red
+        changeSpecular(0, 0, 0.1f);
+        break;
+    case 'T': // decrease cow 1 specular red
+        changeSpecular(0, 0, -0.1f);
+        break;
+    case 'c': // increase cow 1 specular green
+        changeSpecular(0, 1, 0.1f);
+        break;
+    case 'C': // decrease cow 1 specular green
+        changeSpecular(0, 1, -0.1f);
+        break;
+    case 'v': // increase cow 1 specular blue
+        changeSpecular(0, 2, 0.1f);
+        break;
+    case 'V': // decrease cow 1 specular blue
+        changeSpecular(0, 2, -0.1f);
+        break;
+    case 27:
+        exit(0);
+        break;
+    default:
+        break;
+    }
+}
+
+void mouseMotionFunc(int x, int y) {
+
+    float xOffset = 0.0, yOffset = 0.0, zOffset = 0.0;
+
+    if (MouseLeftButton) {
+
+        navigationRotation[0] += ((mouseClickYcordinate - y) * 180.0f) / 200.0f;
+        navigationRotation[1] += ((mouseClickXcordinate - x) * 180.0f) / 200.0f;
+
+        mouseClickYcordinate = y;
+        mouseClickXcordinate = x;
+
+    }
+}
+
+void mouseFunc(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON)
+        if (state == GLUT_DOWN) {
+            MouseLeftButton += 1;
+        }
+        else
+            MouseLeftButton -= 1;
+
+    mouseClickXcordinate = x;
+    mouseClickYcordinate = y;
+}
+
+void init() {
+    glEnable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0f, 1.0f, 0.1f, 100.0f);
+
+    glEnable(GL_LIGHTING);
+
+    // Directional light
+    GLfloat light0_diffuse[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, light0_diffuse);
+    glLightfv(GL_LIGHT0, GL_POSITION, light0_direction);
+    glEnable(GL_LIGHT0);
+
+    // Point light
+    GLfloat light1_diffuse[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, light1_diffuse);
+    glLightfv(GL_LIGHT1, GL_POSITION, light1_position);
+    glEnable(GL_LIGHT1);
+
+    // Spotlight
+    GLfloat light2_diffuse[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    GLfloat light2_spotDirection[] = { -0.5f, -3.0f, -2.0f }; //  -1.0f, -1.0f, -1.0f
+    GLfloat light2_spotCutoff = 10.0f;
+    GLfloat light2_constantAttenuation = 1.0f;
+    GLfloat light2_linearAttenuation = 0.1f;
+    GLfloat light2_quadraticAttenuation = 0.01f;
+    glLightfv(GL_LIGHT2, GL_DIFFUSE, light2_diffuse);
+    glLightfv(GL_LIGHT2, GL_POSITION, light2_position);
+    glLightfv(GL_LIGHT2, GL_SPOT_DIRECTION, light2_spotDirection);
+    glLightf(GL_LIGHT2, GL_SPOT_CUTOFF, light2_spotCutoff);
+    glLightf(GL_LIGHT2, GL_CONSTANT_ATTENUATION, light2_constantAttenuation);
+    glLightf(GL_LIGHT2, GL_LINEAR_ATTENUATION, light2_linearAttenuation);
+    glLightf(GL_LIGHT2, GL_QUADRATIC_ATTENUATION, light2_quadraticAttenuation);
+    glEnable(GL_LIGHT2);
+
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
+
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, global_ambient);
+
+    glShadeModel(shading_model);
+}
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    glutInitWindowSize(800, 600);
+    glutCreateWindow("Assignment 2");
+    readObjFile("/Users/pranav/Downloads/cow.obj");
+    loadTexture("/Users/pranav/Downloads/texture.jpg");
+    initializeCow();
+
+    init();
+
+    glutIdleFunc(idleFunc);
+    glutDisplayFunc(display);
+    glutKeyboardFunc(keyboard);
+    glutMouseFunc(mouseFunc);
+    glutMotionFunc(mouseMotionFunc);
+    glutMainLoop();
+
+    return 0;
+}
